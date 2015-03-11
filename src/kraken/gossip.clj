@@ -1,5 +1,8 @@
 (ns kraken.gossip
+  (:import [java.net ConnectException SocketException])
   (:require [clojure.tools.logging :as log]
+            [clojure.java.io :refer [as-file]]
+            [clojure.core.async :as async :refer [<! timeout chan go-loop]]
             [ring.adapter.jetty :as jetty]
             [kraken.cluster :as cluster]
             [kraken.middleware :as middleware]
@@ -7,60 +10,31 @@
 
 (defonce cluster-state (atom {:version 0 :nodes {}}))
 
-(defn ping
-  [[node-state]]
-  (log/info "Ping")
-  (if (> (:version node-state) (:version @cluster-state))
-    (reset! cluster-state node-state))
-  {:status 200
-   :body :pong})
+(defonce failure-threshold (atom 0))
 
-(defn ping-node
-  ""
+(defonce ping-failures (atom {}))
+
+(defn inc-node-failure
   [node]
-  (let [url (str "http://" node ":10001")
-        body [:ping @cluster-state]
-        response (try
-                   (http/post url body)
-                   (catch Exception e
-                     nil))]
-    (:body response)))
+  (let [new-count (inc (get @ping-failures node 0))]
+    (log/info "fcount" new-count "node=" node)
+    (swap! ping-failures assoc node new-count)))
 
-;(defn send-to-node)
+(defn reset-node-failure
+  [node]
+  (swap! ping-failures assoc node 0))
 
 (defn inc-version
   []
   (let [version (:version @cluster-state)]
     (swap! cluster-state assoc :version (inc version))))
 
-(defn distribute-state
-  [nodes]
-  (log/infof "Distribute state %s" @cluster-state)
-  (pmap (fn [[node args]]
-          (let [url (str "http://" node ":10001")]
-            (http/post url [:state @cluster-state])))
-        (:nodes @cluster-state)))
-
-(defn join
-  [remote-addr [node]]
-  (if (contains? (:nodes @cluster-state) node)
-    (do
-      (log/infof "Node already a member %s" node)
-      {:status 200
-       :body :member_exists})
-    (let [ping (ping-node node)]
-      (if (not= ping :pong)
-        (do
-          (log/infof "Node is unreachable %s" node)
-          {:status 400
-           :body :node_unreachable})
-        (do
-          (log/infof "Node joined the cluster %s" node)
-          (inc-version)
-          (swap! cluster-state assoc-in [:nodes node] :active)
-          ;(future (distribute-state nodes))
-          {:status 201
-           :body {:state @cluster-state}})))))
+(defn down
+  [node]
+  (log/errorf "Node appears to be down %s" node)
+  (dosync
+    (inc-version)
+    (swap! cluster-state assoc-in [:nodes node] :down)))
 
 (defn leave
   [remote-addr [node]]
@@ -90,6 +64,59 @@
   (if (not= node-state @cluster-state)
     (reset! cluster-state node-state)))
 
+(defn ping
+  [remote-addr [node-state]]
+  (log/tracef "ping from=%s" remote-addr)
+  (if (> (:version node-state) (:version @cluster-state))
+    (reset! cluster-state node-state))
+  {:status 200
+   :body :pong})
+
+(defn ping-node
+  ""
+  [node]
+  (log/debugf "ping to=%s, state=%s" node @cluster-state)
+  (let [url (str "http://" node ":10001")
+        body [:ping @cluster-state]
+        response (try
+                   (http/post url body)
+                   (catch SocketException e
+                     (log/infof "ping failure to=%s" node))
+                   (catch ConnectException e
+                     (log/infof "ping failure to=%s" node))
+                   (catch Exception e
+                     (log/error e "ping-node error")))]
+    (:body response)))
+
+(defn distribute-state
+  [nodes]
+  (log/infof "Distribute state %s" @cluster-state)
+  (pmap (fn [[node args]]
+          (let [url (str "http://" node ":10001")]
+            (http/post url [:state @cluster-state])))
+        (:nodes @cluster-state)))
+
+(defn join
+  [remote-addr [node]]
+  (if (contains? (:nodes @cluster-state) node)
+    (do
+      (log/infof "Node already a member %s" node)
+      {:status 200
+       :body :member_exists})
+    (let [ping (ping-node node)]
+      (if (not= ping :pong)
+        (do
+          (log/infof "Node is unreachable %s" node)
+          {:status 400
+           :body :node_unreachable})
+        (do
+          (log/infof "Node joined the cluster %s" node)
+          (inc-version)
+          (swap! cluster-state assoc-in [:nodes node] :normal)
+          ;(future (distribute-state nodes))
+          {:status 201
+           :body {:state @cluster-state}})))))
+
 (defn get-random-node
   [me]
   (let [others (filter (fn [node-info]
@@ -103,19 +130,32 @@
   (log/infof "Starting heartbeat")
   (future
     (try
-      (loop [node (get-random-node me)]
-        (if (nil? node)
+      (loop [node-item (get-random-node me)]
+        (if (nil? node-item)
           (do
-            (log/infof "No other nodes in the cluster...%s" (:nodes @cluster-state))
+            (log/debugf "No other nodes in the cluster...%s" (:nodes @cluster-state))
             (Thread/sleep interval)
             (recur (get-random-node me)))
-          (do
-            (log/infof "ping node=%s, state=%s" node @cluster-state)
-            (ping-node (first node))
+          (let [node (first node-item)
+                res (ping-node node)]
+            (if (nil? res)
+              (do
+                (inc-node-failure node)
+                (log/info "!!fail" @ping-failures)
+                (if (> (get @ping-failures node 0) @failure-threshold)
+                  (down node))))
             (Thread/sleep interval)
             (recur (get-random-node me)))))
       (catch Exception e
         (log/error e "blah")))))
+
+(defn flush-state-to-disk
+  [interval]
+  (future
+    (while true
+      (log/debugf "Flush state to disk")
+      (spit "state.clj" @cluster-state)
+      (Thread/sleep interval))))
 
 (defn handler
   [request]
@@ -128,7 +168,7 @@
       :leave (leave remote-addr args)
       :state (state remote-addr args)
       :elect (elect args)
-      :ping (ping args)
+      :ping (ping remote-addr args)
       (ping))))
 
 (def app
@@ -137,11 +177,22 @@
       middleware/wrap-no-routes
       (middleware/wrap-content-type "application/edn")))
 
+(defn set-failure-threshold
+  [threshold]
+  (log/infof "Set failure detection threshold (%s)" threshold)
+  (reset! failure-threshold threshold))
+
 (defn start
   [conf]
   (let [host (:host conf)
         port (:port conf)
         interval (:interval conf)]
     (log/infof "Starting gossip listener at %s:%s" host port)
+    (if (and (:load-state conf) (.exists (as-file "state.clj")))
+      (dosync
+        (reset! cluster-state (read-string (slurp "state.clj")))
+        (inc-version)))
+    (set-failure-threshold (:failure-threshold conf))
     (heartbeat host interval)
+    (flush-state-to-disk (:flush-interval conf))
     (future (jetty/run-jetty app conf))))

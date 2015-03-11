@@ -13,9 +13,20 @@
     :default 10001
     :parse-fn #(Integer/parseInt %)
     :validate [#(< 0 % 0x10000) "Must be a number between 0 and 65536"]]
+   ["-l" "--load-state BOOL" "Load cluster state from disk"
+    :default true
+    :parse-fn #(Boolean/parseBoolean %)]
    ["-i" "--interval INTERVAL" "Heartbeat interval (sec)"
     :default 1000
-    :parse-fn #(Integer/parseInt %)]])
+    :parse-fn #(Integer/parseInt %)]
+   ["-f" "--flush-interval" "Flush cluster state interval"
+    :default 5000
+    :parse-fn #(Integer/parseInt %)
+    :validate [#(< 1 % 0x10000) "Must be a number between 1 and 65536"]]
+   ["-t" "--failure-threshold" "Failure detection threshold"
+    :default 8
+    :parse-fn #(Integer/parseInt %)
+    :validate [#(< 2 % 0x14) "Must be a number between 2 and 20 (Default is 8)"]]])
 
 (defn -main
   [& args]
