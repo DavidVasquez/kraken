@@ -15,6 +15,9 @@
   (log/infof "Node joined the cluster %s" node))
 
 (defn leave
-  [node nodes]
+  [node cluster-state]
   (log/infof "Node left the cluster %s" node)
-  (swap! nodes dissoc node))
+  (let [version (:version @cluster-state)
+        nodes (:nodes @cluster-state)]
+    (swap! cluster-state assoc :version (inc version))
+    (swap! cluster-state assoc :nodes (dissoc nodes node))))

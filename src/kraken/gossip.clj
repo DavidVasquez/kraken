@@ -5,13 +5,13 @@
             [kraken.middleware :as middleware]
             [kraken.http :as http]))
 
-(defonce nodes (atom {}))
+(defonce cluster-state (atom {:version 0 :nodes {}}))
 
 (defn ping
   [[node-state]]
   (log/info "Ping")
-  (log/infof "state=%s" node-state)
-  (reset! nodes node-state)
+  (if (> (:version node-state) (:version @cluster-state))
+    (reset! cluster-state node-state))
   {:status 200
    :body :pong})
 
@@ -19,27 +19,31 @@
   ""
   [node]
   (let [url (str "http://" node ":10001")
-        body [:ping @nodes]
+        body [:ping @cluster-state]
         response (try
                    (http/post url body)
                    (catch Exception e
                      nil))]
-    (log/info "url" url body)
     (:body response)))
 
 ;(defn send-to-node)
 
+(defn inc-version
+  []
+  (let [version (:version @cluster-state)]
+    (swap! cluster-state assoc :version (inc version))))
+
 (defn distribute-state
   [nodes]
-  (log/infof "Distribute state %s" @nodes)
+  (log/infof "Distribute state %s" @cluster-state)
   (pmap (fn [[node args]]
           (let [url (str "http://" node ":10001")]
-            (http/post url [:state @nodes])))
-        @nodes))
+            (http/post url [:state @cluster-state])))
+        (:nodes @cluster-state)))
 
 (defn join
   [remote-addr [node]]
-  (if (contains? @nodes node)
+  (if (contains? (:nodes @cluster-state) node)
     (do
       (log/infof "Node already a member %s" node)
       {:status 200
@@ -52,18 +56,20 @@
            :body :node_unreachable})
         (do
           (log/infof "Node joined the cluster %s" node)
-          (swap! nodes assoc node :active)
+          (inc-version)
+          (swap! cluster-state assoc-in [:nodes node] :active)
           ;(future (distribute-state nodes))
           {:status 201
-           :body {:nodes @nodes}})))))
+           :body {:state @cluster-state}})))))
 
 (defn leave
   [remote-addr [node]]
-  (if (contains? @nodes node)
+  (if (contains? (:nodes @cluster-state) node)
     (do
       (log/infof "Node leaving the cluster %s" node)
-      (swap! nodes assoc node :leaving)
-      (future (cluster/leave node nodes))
+      (inc-version)
+      (swap! cluster-state assoc-in [:nodes node] :leaving)
+      (future (cluster/leave node cluster-state))
       ;(future (distribute-state nodes))
       {:status 200
        :body :ok})
@@ -81,14 +87,14 @@
 (defn state
   [remote-addr [node-state]]
   (log/infof "Received cluster state %s from %s" node-state remote-addr)
-  (if (not= node-state @nodes)
-    (reset! nodes node-state)))
+  (if (not= node-state @cluster-state)
+    (reset! cluster-state node-state)))
 
 (defn get-random-node
   [me]
   (let [others (filter (fn [node-info]
                          (not= (first node-info) me))
-                       @nodes)]
+                       (:nodes @cluster-state))]
     (if (> (count others) 0)
       (rand-nth others))))
 
@@ -100,11 +106,11 @@
       (loop [node (get-random-node me)]
         (if (nil? node)
           (do
-            (log/infof "No other nodes in the cluster...%s" @nodes)
+            (log/infof "No other nodes in the cluster...%s" (:nodes @cluster-state))
             (Thread/sleep interval)
             (recur (get-random-node me)))
           (do
-            (log/infof "ping %s" node)
+            (log/infof "ping node=%s, state=%s" node @cluster-state)
             (ping-node (first node))
             (Thread/sleep interval)
             (recur (get-random-node me)))))
