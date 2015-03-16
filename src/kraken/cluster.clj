@@ -2,9 +2,9 @@
   (:require [clojure.tools.logging :as log]
             [kraken.http :as http]))
 
-(defn active-nodes
+(defn normal-nodes
   [nodes]
-  (filter :active @nodes))
+  (filter :normal @nodes))
 
 (defn down-nodes
   [nodes]
