@@ -1,4 +1,4 @@
-(ns kraken.server
+(ns kraken.node
   (:require [clojure.tools.logging :as log]
             [kraken.gossip :as gossip]))
 

@@ -1,7 +1,7 @@
 (ns kraken.core
   (:require [clojure.tools.cli :refer [parse-opts]]
             [clojure.tools.logging :as log]
-            [kraken.server :as server])
+            [kraken.node :as node])
   (:import (java.net InetAddress))
   (:gen-class))
 
@@ -32,5 +32,5 @@
   [& args]
   (let [{:keys [options arguments errors summary]}
         (parse-opts args cli-options)]
-    (log/infof "Kraken v%s - Cluster Server" "1.0")
-    (server/start options)))
+    (log/infof "Kraken v%s - Cluster Server" "0.1")
+    (node/start options)))

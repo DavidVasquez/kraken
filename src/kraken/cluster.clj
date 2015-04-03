@@ -2,6 +2,8 @@
   (:require [clojure.tools.logging :as log]
             [kraken.http :as http]))
 
+(defonce cluster-state (atom {:version 0 :nodes {}}))
+
 (defn normal-nodes
   [nodes]
   (filter :normal @nodes))

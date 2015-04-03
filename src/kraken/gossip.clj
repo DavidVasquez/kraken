@@ -17,7 +17,6 @@
 (defn inc-node-failure
   [node]
   (let [new-count (inc (get @ping-failures node 0))]
-    (log/info "fcount" new-count "node=" node)
     (swap! ping-failures assoc node new-count)))
 
 (defn reset-node-failure
@@ -29,12 +28,28 @@
   (let [version (:version @cluster-state)]
     (swap! cluster-state assoc :version (inc version))))
 
+(defn is-up
+  [node]
+  (= :up (get-in @cluster-state [:nodes node])))
+
+(defn is-down?
+  [node]
+  (= :down (get-in @cluster-state [:nodes node])))
+
+(defn up
+  [node]
+  (log/infof "Node has rejoined the cluster %s" node)
+  (dosync
+    (inc-version)
+    (swap! cluster-state assoc-in [:nodes node] :normal)))
+
 (defn down
   [node]
   (log/errorf "Node appears to be down %s" node)
-  (dosync
-    (inc-version)
-    (swap! cluster-state assoc-in [:nodes node] :down)))
+  (if (not (is-down? node))
+    (dosync
+      (inc-version)
+      (swap! cluster-state assoc-in [:nodes node] :down))))
 
 (defn leave
   [remote-addr [node]]
@@ -73,17 +88,17 @@
    :body :pong})
 
 (defn ping-node
-  ""
   [node]
   (log/debugf "ping to=%s, state=%s" node @cluster-state)
   (let [url (str "http://" node ":10001")
         body [:ping @cluster-state]
+        failures (get @ping-failures node 0)
         response (try
                    (http/post url body)
                    (catch SocketException e
-                     (log/infof "ping failure to=%s" node))
+                     (log/warnf "ping failure to=%s (%s)" node failures))
                    (catch ConnectException e
-                     (log/infof "ping failure to=%s" node))
+                     (log/warnf "ping failure to=%s (%s)" node failures))
                    (catch Exception e
                      (log/error e "ping-node error")))]
     (:body response)))
@@ -101,6 +116,8 @@
   (if (contains? (:nodes @cluster-state) node)
     (do
       (log/infof "Node already a member %s" node)
+      (if (not= :normal (get-in @cluster-state [:nodes node]))
+        (swap! cluster-state assoc-in [:nodes node] :normal))
       {:status 200
        :body :member_exists})
     (let [ping (ping-node node)]
@@ -141,9 +158,10 @@
             (if (nil? res)
               (do
                 (inc-node-failure node)
-                (log/info "!!fail" @ping-failures)
                 (if (> (get @ping-failures node 0) @failure-threshold)
-                  (down node))))
+                  (down node)))
+              (if (is-down? node)
+                (up node)))
             (Thread/sleep interval)
             (recur (get-random-node me)))))
       (catch Exception e
