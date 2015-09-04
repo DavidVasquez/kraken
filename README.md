@@ -1,28 +1,14 @@
-# kraken
+# Kraken
 
-FIXME: description
+Infection-style cluster state management library based on the [SWIM algorithm](https://www.cs.cornell.edu/~asdas/research/dsn02-swim.pdf).
 
 ## Installation
 
-Download from http://example.com/FIXME.
+No installation available atm
 
 ## Usage
 
-FIXME: explanation
-
-    $ java -jar kraken-0.1.0-standalone.jar [args]
-
-## Options
-
-FIXME: listing of options this app accepts.
-
-## Examples
-
-...
-
-### Bugs
-
-...
+    lein run [options]
 
 ## License
 
