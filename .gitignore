@@ -1,3 +1,4 @@
+state.clj
 *.swp
 /target
 /classes
