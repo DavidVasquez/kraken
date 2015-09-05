@@ -1,6 +1,6 @@
 # Kraken
 
-Infection-style cluster state management library based on the [SWIM algorithm](https://www.cs.cornell.edu/~asdas/research/dsn02-swim.pdf).
+Infection-style cluster state management library based on the [SWIM protocol](https://www.cs.cornell.edu/~asdas/research/dsn02-swim.pdf).
 
 ## Installation
 
